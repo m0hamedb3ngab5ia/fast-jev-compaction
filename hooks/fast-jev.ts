@@ -10,6 +10,7 @@ import type {
 
 import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
+import { DEFAULT_ROUTING, routeCompaction, type CompactionRoute } from '../src/route.js';
 import type {
   CompactOptions,
   CompactResult,
@@ -21,8 +22,11 @@ import type {
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
-  minReductionRatio: 0.25,
+  minReductionRatio: DEFAULT_ROUTING.minReductionRatio,
   model: DEFAULT_MODEL,
+  smartRoutingEnabled: true,
+  toolHeavyThreshold: DEFAULT_ROUTING.toolHeavyThreshold,
+  proseHeavyThreshold: DEFAULT_ROUTING.proseHeavyThreshold,
 };
 
 export type HookFetchInit = {
@@ -45,11 +49,20 @@ export type HookConfig = CompactOptions & {
   compactAtPercent: number;
   minReductionRatio: number;
   model: string;
+  /** Pick jev / builtin / jev_then_builtin per transcript; off = always jev_then_builtin. */
+  smartRoutingEnabled: boolean;
+  toolHeavyThreshold: number;
+  proseHeavyThreshold: number;
 };
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
   const value = options[key];
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function optionBoolean(options: PluginOptions, key: string, fallback: boolean): boolean {
+  const value = options[key];
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function optionString(options: PluginOptions, key: string): string | undefined {
@@ -79,6 +92,21 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
       HOOK_DEFAULTS.minReductionRatio,
     ),
     model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
+    smartRoutingEnabled: optionBoolean(
+      options,
+      'smartRoutingEnabled',
+      HOOK_DEFAULTS.smartRoutingEnabled,
+    ),
+    toolHeavyThreshold: optionNumber(
+      options,
+      'toolHeavyThreshold',
+      HOOK_DEFAULTS.toolHeavyThreshold,
+    ),
+    proseHeavyThreshold: optionNumber(
+      options,
+      'proseHeavyThreshold',
+      HOOK_DEFAULTS.proseHeavyThreshold,
+    ),
   };
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
@@ -243,6 +271,36 @@ async function getApiKey(
   return undefined;
 }
 
+type Route = Pick<CompactionRoute, 'strategy' | 'reason'>;
+
+/**
+ * Picks the strategy for one compaction. Routing is advisory: when it is off
+ * or throws, the hook does what it always did (Jev, then the built-in summary
+ * if Jev fails or removes too little), so it can never block `/compact`.
+ */
+export function routeFor(
+  messages: readonly SessionMessage[],
+  config: HookConfig,
+  log: (text: string) => void,
+): Route {
+  if (!config.smartRoutingEnabled) {
+    return { strategy: 'jev_then_builtin', reason: 'smart routing off' };
+  }
+  try {
+    return routeCompaction(messages, {
+      toolHeavyThreshold: config.toolHeavyThreshold,
+      proseHeavyThreshold: config.proseHeavyThreshold,
+      minReductionRatio: config.minReductionRatio,
+      preserveRecentMessages: resolveOptions(config).preserveRecentMessages,
+    });
+  } catch (error) {
+    log(
+      `smart-compact: routing failed (${error instanceof Error ? error.message : String(error)}), using jev_then_builtin`,
+    );
+    return { strategy: 'jev_then_builtin', reason: 'routing failed' };
+  }
+}
+
 function notify(
   $: {
     ui: {
@@ -261,6 +319,13 @@ export const register: Register = (on: On, options: PluginOptions) => {
   let compacting = false;
 
   on('session.compact', async ($, event, next) => {
+    const route = routeFor(event.messages, configured, (text) => $.ui.log(text));
+    const tag = `smart-compact: strategy=${route.strategy}`;
+    if (route.strategy === 'builtin') {
+      notify($, `${tag}, ${route.reason}`);
+      return next(event);
+    }
+    $.ui.log(`${tag} (${route.reason})`);
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
       const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
@@ -268,22 +333,19 @@ export const register: Register = (on: On, options: PluginOptions) => {
         return { status: response.status, ok: response.ok, text: response.text };
       });
       for (const line of decisionLogLines(result)) $.ui.log(line);
+      const reduction = percent(reductionRatio(result));
       if (reductionRatio(result) < config.minReductionRatio) {
-        notify(
-          $,
-          `fallback to built-in summary (below ${percent(config.minReductionRatio)} minimum: ${summarize(result)})`,
-        );
+        $.ui.log(`below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`);
+        notify($, `${tag}, Jev reduction=${reduction}, falling back to built-in`);
         return next(event);
       }
-      notify(
-        $,
-        `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)})`,
-      );
+      $.ui.log(summarize(result));
+      notify($, `${tag}, reduction=${reduction}, kept ${messages.length}/${event.messages.length} messages`);
       return { messages };
     } catch (error) {
       notify(
         $,
-        `fallback to built-in summary (${error instanceof Error ? error.message : String(error)})`,
+        `${tag}, Jev failed (${error instanceof Error ? error.message : String(error)}), falling back to built-in`,
       );
       return next(event);
     }

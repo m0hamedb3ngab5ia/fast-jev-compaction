@@ -1,7 +1,7 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.3.0",
-  "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
+  "version": "0.4.0",
+  "description": "Verbatim Jev-guided compaction for Claude Code sessions, with smart routing between Jev and the built-in summary.",
   "license": "MIT",
   "userConfig": {
     "apiKey": {
@@ -28,10 +28,28 @@
       "description": "Context percentage at which turn.complete requests compaction.",
       "default": 60
     },
+    "smartRoutingEnabled": {
+      "type": "boolean",
+      "title": "Smart routing",
+      "description": "Choose Jev, the built-in summary, or Jev then built-in per transcript. Off: always try Jev first.",
+      "default": true
+    },
+    "toolHeavyThreshold": {
+      "type": "number",
+      "title": "Tool-heavy threshold",
+      "description": "Share of context in tool calls/results at or above which Jev runs alone.",
+      "default": 0.6
+    },
+    "proseHeavyThreshold": {
+      "type": "number",
+      "title": "Prose-heavy threshold",
+      "description": "Share of context in user/assistant text at or above which the built-in summary runs without asking Jev.",
+      "default": 0.6
+    },
     "minReductionRatio": {
       "type": "number",
       "title": "Minimum reduction ratio",
-      "description": "Minimum estimated character reduction required to replace history.",
+      "description": "Minimum estimated character reduction Jev must reach to replace history; below it, and when Jev can remove no more than this, the built-in summary runs.",
       "default": 0.25
     },
     "maxStateTokens": {
