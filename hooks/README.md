@@ -52,6 +52,9 @@ The plugin declares these `userConfig` values in
 | `preserveRecentMessages` | `6` |
 | `compactAtPercent` | `60` |
 | `minReductionRatio` | `0.25` |
+| `smartRoutingEnabled` | `true` |
+| `toolHeavyThreshold` | `0.6` |
+| `proseHeavyThreshold` | `0.6` |
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
 | `truncateHeadChars` | `300` |
@@ -61,9 +64,11 @@ The TypeSafe key can be supplied as the sensitive `apiKey` plugin option or
 through `TYPESAFE_API_KEY`. The environment variable is the recommended
 development setup.
 
-Every option except `apiKey`, `compactAtPercent`, `minReductionRatio` and
-`model` is passed straight to the library; see the root README for what they
-do. The `session.compact` hook runs the Jev requests concurrently. If Jev fails,
+Every option except `apiKey`, `compactAtPercent`, `minReductionRatio`, `model` and the three
+routing options is passed straight to the library; see the root README for what they
+do. The `session.compact` hook first picks a strategy (`jev`, `builtin` or `jev_then_builtin`; rules in
+the root README's Smart routing section); `builtin` delegates to Claude Code's summary without
+contacting Jev. Otherwise it runs the Jev requests concurrently. If Jev fails,
 the response is malformed, the key is unavailable, the history cannot be
 fitted into the state budget, or the estimated reduction is below
 `minReductionRatio`, the hook logs a fallback and delegates to Claude Code's

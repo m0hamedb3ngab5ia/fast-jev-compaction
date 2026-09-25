@@ -56,6 +56,36 @@ built-in compaction summary with the original messages.
 Jev failures, malformed answers, a missing key, or a history that cannot be
 fitted throw; the caller (or the Claude Code hook) decides what to fall back to.
 
+## Smart routing
+
+Before asking Jev, the `session.compact` hook measures the transcript (character counts only, no model
+call, in the same units as the reduction ratio) and picks a strategy, first match wins:
+
+| # | Signal | Strategy |
+| --- | --- | --- |
+| 1 | unpinned tool calls + results < `minReductionRatio` of context (Jev cannot reach the minimum) | `builtin` |
+| 2 | unpinned calls repeated later with the same tool and input ≥ `minReductionRatio` | `jev` |
+| 3 | tool calls + results ≥ `toolHeavyThreshold` (0.6) | `jev` |
+| 4 | user/assistant text ≥ `proseHeavyThreshold` (0.6), under 30% of it code/paths/commands/errors | `builtin` |
+| 4b | same, but ≥ 30% exact technical text (a summary would lose it) | `jev_then_builtin` |
+| 5 | anything else (mixed) | `jev_then_builtin` |
+
+`builtin` hands the event straight to Claude Code's summary (no key lookup, no request). `jev` and
+`jev_then_builtin` both run Jev with every existing guarantee, and fall back to the summary when Jev
+fails, answers malformed, or removes less than `minReductionRatio`; the strategy name records what was
+expected. If routing throws, or `smartRoutingEnabled` is off, the hook behaves exactly as before
+(`jev_then_builtin`). The routing functions (`routeCompaction`, `measureTranscript`, `chooseStrategy`) are
+exported from the library.
+
+The toast (and `$.ui.log`) reads one of:
+
+```text
+smart-compact: strategy=jev, reduction=43%, kept 12/30 messages
+smart-compact: strategy=jev_then_builtin, Jev reduction=12%, falling back to built-in
+smart-compact: strategy=builtin, prose-heavy session (tools 18%, prose 82%)
+smart-compact: strategy=jev, Jev failed (TYPESAFE_API_KEY is not configured), falling back to built-in
+```
+
 ## Install and usage
 
 ```sh
@@ -111,6 +141,9 @@ put it in a source file.
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
 
+Plugin-only options: `compactAtPercent` (60), `minReductionRatio` (0.25), `smartRoutingEnabled`
+(true), `toolHeavyThreshold` (0.6), `proseHeavyThreshold` (0.6); see [`hooks/README.md`](hooks/README.md).
+
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting
 stage was needed, and the number of requests.
@@ -153,10 +186,8 @@ claude plugin install fast-jev-compaction@fast-jev-compaction
 The install prompts for the plugin options (API key, thresholds, `truncateHeadChars`,
 …); leave them at their defaults to use `TYPESAFE_API_KEY` from the environment.
 Restart Claude Code or run `/reload-plugins`. From then on `/compact` (and
-auto-compaction) goes through Jev: the toast reads
-`fast-jev-compaction: kept N/M messages, no summary (…)` when the pruned history
-replaced the built-in summary, or `fallback to built-in summary (…)` when Jev
-could not remove enough (short sessions, or when it fails).
+auto-compaction) is routed as described in [Smart routing](#smart-routing), with one
+`smart-compact:` toast per compaction.
 
 To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .`
 from the repository root. No publishing step is required; the marketplace is
